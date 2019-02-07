@@ -38,7 +38,9 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/syscache.h"
 #include "utils/builtins.h"
+#include "utils/ruleutils.h"
 
 #include "pglogical.h"
 #include "pglogical_apply_spi.h"
@@ -166,6 +168,158 @@ pglogical_apply_spi_insert(PGLogicalRelation *rel, PGLogicalTupleData *newtup)
 	pfree(cmd.data);
 }
 
+
+/*
+ * Handle upsert via SPI.
+ */
+void
+pglogical_apply_spi_upsert_from_insert(PGLogicalRelation *rel, PGLogicalTupleData *newtup)
+{
+	TupleDesc		desc = RelationGetDescr(rel->rel);
+	Oid				argtypes[MaxTupleAttributeNumber];
+	Datum			values[MaxTupleAttributeNumber];
+	char			nulls[MaxTupleAttributeNumber];
+	StringInfoData	cmd;
+	int	att,
+		narg,
+		firstarg,
+		keyno,
+		found;
+	Oid replica_index_id, indrelid;
+
+	const char * attribute_name;
+	const char * index_column_name;
+
+	HeapTuple	ht_idx;
+	Form_pg_index idxrec;
+
+	replica_index_id = RelationGetReplicaIndex(rel->rel);
+	if (replica_index_id == InvalidOid)
+	{
+		elog(ERROR, "Could not find replica index for relation: %s",
+			RelationGetRelationName(rel->rel));
+		return;
+	}
+
+	/*
+	 * Fetch the pg_index tuple by the Oid of the index
+	 */
+	ht_idx = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(replica_index_id));
+	if (!HeapTupleIsValid(ht_idx))
+	{
+		elog(ERROR, "cache lookup failed for index %u", replica_index_id);
+		return;
+	}
+	idxrec = (Form_pg_index) GETSTRUCT(ht_idx);
+	indrelid = idxrec->indrelid;
+
+	initStringInfo(&cmd);
+	appendStringInfo(&cmd, "INSERT INTO %s (",
+					 quote_qualified_identifier(rel->nspname, rel->relname));
+
+	for (att = 0, narg = 0; att < desc->natts; att++)
+	{
+		if (TupleDescAttr(desc,att)->attisdropped)
+			continue;
+
+		if (!newtup->changed[att])
+			continue;
+
+		if (narg > 0)
+			appendStringInfo(&cmd, ", %s",
+					quote_identifier(NameStr(TupleDescAttr(desc,att)->attname)));
+		else
+			appendStringInfo(&cmd, "%s",
+					quote_identifier(NameStr(TupleDescAttr(desc,att)->attname)));
+		narg++;
+	}
+
+	appendStringInfoString(&cmd, ") VALUES (");
+
+	for (att = 0, narg = 0; att < desc->natts; att++)
+	{
+		if (TupleDescAttr(desc,att)->attisdropped)
+			continue;
+
+		if (!newtup->changed[att])
+			continue;
+
+		if (narg > 0)
+			appendStringInfo(&cmd, ", $%u", narg + 1);
+		else
+			appendStringInfo(&cmd, "$%u", narg + 1);
+
+		argtypes[narg] = TupleDescAttr(desc,att)->atttypid;
+		values[narg] = newtup->values[att];
+		nulls[narg] = newtup->nulls[att] ? 'n' : ' ';
+		narg++;
+	}
+
+	appendStringInfo(&cmd, ") ON CONFLICT ON CONSTRAINT %s DO UPDATE SET ",
+			quote_identifier(get_rel_name(replica_index_id)));
+
+	firstarg = narg;
+	for (att = 0; att < desc->natts; att++)
+	{
+		if (TupleDescAttr(desc,att)->attisdropped)
+			continue;
+
+		if (!newtup->changed[att])
+			continue;
+
+	    attribute_name = quote_identifier(NameStr(TupleDescAttr(desc,att)->attname));
+
+		/* Check if the column is part of the replica index and skip if it is. We know
+		   we won't be missing any value changes since the unique constaint will error
+		   if we've gotten to this point. */
+		found = false;
+		for (keyno = 0; keyno < idxrec->indnatts; keyno++)
+		{
+			AttrNumber	attnum = idxrec->indkey.values[keyno];
+			if (attnum != 0)
+			{
+				/* Simple index column */
+				index_column_name = quote_identifier(get_relid_attribute_name(indrelid, attnum));
+
+				if (strcmp(attribute_name, index_column_name) == 0)
+				{
+					found = true;
+					break;
+				}
+			}
+		}
+
+		if (found)
+			continue;
+
+		if (narg > firstarg)
+			appendStringInfo(&cmd, ", %s = $%u", attribute_name, narg + 1);
+		else
+			appendStringInfo(&cmd, "%s = $%u", attribute_name, narg + 1);
+
+		argtypes[narg] = TupleDescAttr(desc,att)->atttypid;
+		values[narg] = newtup->values[att];
+		nulls[narg] = newtup->nulls[att] ? 'n' : ' ';
+		narg++;
+	}
+
+	if (SPI_execute_with_args(cmd.data, narg, argtypes, values, nulls, false,
+							  0) != SPI_OK_INSERT)
+		elog(ERROR, "SPI_execute_with_args failed");
+	MemoryContextSwitchTo(MessageContext);
+
+	/* Clean up */
+	ReleaseSysCache(ht_idx);
+	pfree(cmd.data);
+}
+
+void
+pglogical_apply_spi_upsert_from_update(PGLogicalRelation *rel,
+									   PGLogicalTupleData *oldtup,
+									   PGLogicalTupleData *newtup)
+{
+	pglogical_apply_spi_upsert_from_insert(rel, newtup);
+}
 /*
  * Handle update via SPI.
  */

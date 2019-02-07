@@ -27,6 +27,12 @@ extern void pglogical_apply_spi_update(PGLogicalRelation *rel,
 extern void pglogical_apply_spi_delete(PGLogicalRelation *rel,
 									   PGLogicalTupleData *oldtup);
 
+extern void pglogical_apply_spi_upsert_from_insert(PGLogicalRelation *rel,
+												   PGLogicalTupleData *newtup);
+extern void pglogical_apply_spi_upsert_from_update(PGLogicalRelation *rel,
+												   PGLogicalTupleData *oldtup,
+												   PGLogicalTupleData *newtup);
+
 extern bool pglogical_apply_spi_can_mi(PGLogicalRelation *rel);
 extern void pglogical_apply_spi_mi_add_tuple(PGLogicalRelation *rel,
 											 PGLogicalTupleData *tup);

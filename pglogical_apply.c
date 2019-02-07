@@ -210,7 +210,7 @@ format_action_description(
 	appendStringInfoString(si,
 		action_name == NULL ? "(unknown action)" : action_name);
 
-	if (rel != NULL && 
+	if (rel != NULL &&
 		rel->nspname != NULL
 		&& rel->relname != NULL
 		&& !is_ddl_or_drop)
@@ -1455,7 +1455,7 @@ apply_work(PGconn *streamConn)
 
 		if (!in_remote_transaction)
 			process_syncing_tables(last_received);
-		
+
 		/* We must not have switched out of MessageContext by mistake */
 		Assert(CurrentMemoryContext == MessageContext);
 
@@ -1867,16 +1867,25 @@ pglogical_apply_main(Datum main_arg)
 	/* Load correct apply API. */
 	if (pglogical_use_spi)
 	{
-		if (pglogical_conflict_resolver != PGLOGICAL_RESOLVE_ERROR)
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("pglogical.use_spi can only be used when "
-							"pglogical.conflict_resolution is set to 'error'")));
+		if (pglogical_conflict_resolver == PGLOGICAL_RESOLVE_APPLY_REMOTE)
+		{
+			apply_api.do_insert = pglogical_apply_spi_upsert_from_insert;
+			apply_api.do_update = pglogical_apply_spi_upsert_from_update;
+		}
+		else
+		{
+			if (pglogical_conflict_resolver != PGLOGICAL_RESOLVE_ERROR)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("pglogical.use_spi can only be used when "
+								"pglogical.conflict_resolution is set to 'error'")));
+
+			apply_api.do_insert = pglogical_apply_spi_insert;
+			apply_api.do_update = pglogical_apply_spi_update;
+		}
 
 		apply_api.on_begin = pglogical_apply_spi_begin;
 		apply_api.on_commit = pglogical_apply_spi_commit;
-		apply_api.do_insert = pglogical_apply_spi_insert;
-		apply_api.do_update = pglogical_apply_spi_update;
 		apply_api.do_delete = pglogical_apply_spi_delete;
 		apply_api.can_multi_insert = pglogical_apply_spi_can_mi;
 		apply_api.multi_insert_add_tuple = pglogical_apply_spi_mi_add_tuple;
