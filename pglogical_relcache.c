@@ -31,6 +31,7 @@
 
 static HTAB *PGLogicalRelationHash = NULL;
 
+
 static void pglogical_relcache_init(void);
 static int tupdesc_get_att_by_name(TupleDesc desc, const char *attname);
 
@@ -133,18 +134,10 @@ pglogical_relation_cache_update(uint32 remoteid, char *schemaname,
 	if (PGLogicalRelationHash == NULL)
 		pglogical_relcache_init();
 
-    if (MySubscription == NULL)
-		elog(ERROR, "MySubscription is NULL");
-	else {
-		elog(LOG, "Current sub name: %s", MySubscription->name);
-        elog(LOG, "Current slot name: %s", MySubscription->slot_name);
-        elog(LOG, "Current dest relname: %s", MySubscription->destination_relname);
-    }
+	if (MySubscription == NULL)
+		elog(ERROR, "No subscription available in process.");
 
-	if (MySubscription != NULL && strlen(MySubscription->destination_relname) > 0)
-		relname = MySubscription->destination_relname;
-	else
-		elog(ERROR, "No destination relname provided");
+	relname = get_remapped_relname(MySubscription, relname);
 
 	/*
 	 * HASH_ENTER returns the existing entry if present or creates a new one.
@@ -181,8 +174,6 @@ pglogical_relation_cache_updater(PGLogicalRemoteRel *remoterel)
 
 	if (PGLogicalRelationHash == NULL)
 		pglogical_relcache_init();
-
-    elog(LOG, "Updating cache for: %s", remoterel->relname);
 
 	/*
 	 * HASH_ENTER returns the existing entry if present or creates a new one.

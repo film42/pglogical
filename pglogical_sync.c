@@ -389,19 +389,12 @@ make_copy_attnamelist(PGLogicalRelation *rel)
 	return attnamelist;
 }
 
-static char * get_relname_from_my_subscription(char * relname)
+static char *get_relname_from_my_subscription(char *relname)
 {
+	if (MySubscription == NULL)
+		elog(ERROR, "MySubscription in sync mode should not be NULL");
 
-  if (MySubscription == NULL) {
-    elog(LOG, "MySubscription in sync mode is null (rel: %s)", relname);
-  }
-
-  elog(LOG, "MySubscription dest relanme: %s (remoterel: %s)", MySubscription->destination_relname, relname);
-
-  if (MySubscription != NULL && strlen(MySubscription->destination_relname) > 0)
-    return MySubscription->destination_relname;
-
-  return relname;
+	return get_remapped_relname(MySubscription, relname);
 }
 
 /*
@@ -418,25 +411,23 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 	List	   *attnamelist;
 	ListCell   *lc;
 	char       *local_relname;
-    char       *remote_relname = remoterel->relname;
+	char       *remote_relname = remoterel->relname;
 	bool		first;
 	StringInfoData	query;
 	StringInfoData	attlist;
 	MemoryContext	curctx = CurrentMemoryContext,
 					oldctx;
 
-    local_relname = get_relname_from_my_subscription(remoterel->relname);
-
-    elog(LOG, "We are going to start copying data for table: %s", remoterel->relname);
+	local_relname = get_relname_from_my_subscription(remoterel->relname);
 
 	/* Build the relation map. */
 	StartTransactionCommand();
 	oldctx = MemoryContextSwitchTo(curctx);
 
     /* HACK: Rename the cached remote relname to the local destination override. */
-    remoterel->relname = local_relname;
+	remoterel->relname = local_relname;
 	pglogical_relation_cache_updater(remoterel);
-    remoterel->relname = remote_relname;
+	remoterel->relname = remote_relname;
 
 	rel = pglogical_relation_open(remoterel->relid, AccessShareLock);
 	attnamelist = make_copy_attnamelist(rel);
@@ -610,9 +601,6 @@ copy_tables_data(char *sub_name, const char *origin_dsn,
 	{
 		RangeVar	*rv = lfirst(lc);
 		PGLogicalRemoteRel	*remoterel;
-
-        /* local_copytable = makeRangeVar(NameStr(MySyncWorker->nspname), */
-        /*                                local_relname, -1); */
 
 		remoterel = pg_logical_get_remote_repset_table(origin_conn, rv,
 													   replication_sets);
@@ -951,8 +939,6 @@ pglogical_sync_table(PGLogicalSubscription *sub, RangeVar *local_table,
 	char	   *snapshot;
 	PGLogicalSyncStatus	   *sync;
 
-    elog(LOG, "Inside pglogical_sync_table and about to work.");
-
 	StartTransactionCommand();
 
 	/* Sanity check. */
@@ -1015,8 +1001,6 @@ pglogical_sync_table(PGLogicalSubscription *sub, RangeVar *local_table,
 							  SYNC_STATUS_DATA, *status_lsn);
 		CommitTransactionCommand();
 
-        elog(LOG, "We are done with sync status stuff. Time to start copying data.");
-
 		/* Copy data. */
 		copy_tables_data(sub->name, sub->origin_if->dsn,sub->target_if->dsn,
 						 snapshot, list_make1(remote_table), sub->replication_sets,
@@ -1078,11 +1062,11 @@ pglogical_sync_main(Datum main_arg)
 	XLogRecPtr		status_lsn;
 	StringInfoData	slot_name;
 	RangeVar	   *remote_copytable = NULL;
-    RangeVar       *local_copytable = NULL;
+	RangeVar       *local_copytable = NULL;
 	MemoryContext	saved_ctx;
 	char		   *tablename;
 	char			status;
-    char           *local_relname;
+	char           *local_relname;
 
 	/* Setup shmem. */
 	pglogical_worker_attach(slot, PGLOGICAL_WORKER_SYNC);
@@ -1120,12 +1104,12 @@ pglogical_sync_main(Datum main_arg)
 	MemoryContextSwitchTo(saved_ctx);
 	CommitTransactionCommand();
 
-    local_relname = get_relname_from_my_subscription(NameStr(MySyncWorker->relname));
+	local_relname = get_relname_from_my_subscription(NameStr(MySyncWorker->relname));
 
 	remote_copytable = makeRangeVar(NameStr(MySyncWorker->nspname),
                                     NameStr(MySyncWorker->relname), -1);
 
-    local_copytable = makeRangeVar(NameStr(MySyncWorker->nspname),
+	local_copytable = makeRangeVar(NameStr(MySyncWorker->nspname),
                                    local_relname, -1);
 
 	tablename = quote_qualified_identifier(local_copytable->schemaname,

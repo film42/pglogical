@@ -85,7 +85,7 @@ typedef struct SubscriptionTuple
 	Oid			sub_target_if;
 	bool		sub_enabled;
 	NameData	sub_slot_name;
-	NameData    sub_destination_relname;
+	Oid			sub_table_mappings;
 } SubscriptionTuple;
 
 #define Natts_subscription			12
@@ -100,7 +100,7 @@ typedef struct SubscriptionTuple
 #define Anum_sub_replication_sets	9
 #define Anum_sub_forward_origins	10
 #define Anum_sub_apply_delay		11
-#define Anum_sub_destination_relname		12
+#define Anum_sub_table_mappings		12
 
 /*
  * We impose same validation rules as replication slot name validation does.
@@ -694,7 +694,6 @@ create_subscription(PGLogicalSubscription *sub)
 	bool		nulls[Natts_subscription];
 	NameData	sub_name;
 	NameData	sub_slot_name;
-	NameData	sub_destination_relname;
 
 	/* Validate the new subscription name. */
 	validate_subscription_name(sub->name);
@@ -743,8 +742,11 @@ create_subscription(PGLogicalSubscription *sub)
 	else
 		nulls[Anum_sub_apply_delay - 1] = true;
 
-    namestrcpy(&sub_destination_relname, sub->destination_relname);
-	values[Anum_sub_destination_relname - 1] = NameGetDatum(&sub_destination_relname);
+	if (list_length(sub->table_mappings) > 0)
+		values[Anum_sub_table_mappings - 1] =
+			PointerGetDatum(strlist_to_textarray(sub->table_mappings));
+	else
+		nulls[Anum_sub_table_mappings - 1] = true;
 
 	tup = heap_form_tuple(tupDesc, values, nulls);
 
@@ -778,7 +780,6 @@ alter_subscription(PGLogicalSubscription *sub)
 	bool		nulls[Natts_subscription];
 	bool		replaces[Natts_subscription];
 	NameData	sub_slot_name;
-    NameData	sub_destination_relname;
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_SUBSCRIPTION, -1);
 	rel = heap_openrv(rv, RowExclusiveLock);
@@ -808,7 +809,6 @@ alter_subscription(PGLogicalSubscription *sub)
 
 	replaces[Anum_sub_id - 1] = false;
 	replaces[Anum_sub_name - 1] = false;
-    replaces[Anum_sub_destination_relname - 1] = false;
 
 	values[Anum_sub_origin - 1] = ObjectIdGetDatum(sub->origin_if->nodeid);
 	values[Anum_sub_target - 1] = ObjectIdGetDatum(sub->target_if->nodeid);
@@ -832,8 +832,11 @@ alter_subscription(PGLogicalSubscription *sub)
 
 	values[Anum_sub_apply_delay - 1] = IntervalPGetDatum(sub->apply_delay);
 
-	namestrcpy(&sub_destination_relname, sub->destination_relname);
-	values[Anum_sub_destination_relname - 1] = NameGetDatum(&sub_destination_relname);
+	if (list_length(sub->table_mappings) > 0)
+		values[Anum_sub_table_mappings - 1] =
+			PointerGetDatum(strlist_to_textarray(sub->table_mappings));
+	else
+		nulls[Anum_sub_table_mappings - 1] = true;
 
 	newtup = heap_modify_tuple(oldtup, tupDesc, values, nulls, replaces);
 
@@ -889,6 +892,34 @@ drop_subscription(Oid subid)
 	pglogical_subscription_changed(subid, true);
 }
 
+/* TODO: This currently only maps from key->value.
+   Make sure this maps the opposite direction as well. */
+char *
+get_remapped_relname(PGLogicalSubscription *sub, char *relname)
+{
+	ListCell *lc;
+	bool return_next = false;
+
+	/* There are no table mappings associated with this subscription. */
+	if (list_length(sub->table_mappings) == 0)
+		return relname;
+
+	/* Try to find a mapping on the subscription. */
+	foreach (lc, sub->table_mappings)
+	{
+		char *mapping_relname = (char *) lfirst(lc);
+
+		if (return_next)
+			return pstrdup(mapping_relname);
+
+		if (strcmp(mapping_relname, relname) == 0)
+			return_next = true;
+	}
+
+	/* If no remapping is found, return the original relname. */
+	return relname;
+}
+
 static PGLogicalSubscription*
 subscription_fromtuple(HeapTuple tuple, TupleDesc desc)
 {
@@ -937,18 +968,17 @@ subscription_fromtuple(HeapTuple tuple, TupleDesc desc)
 	else
 		sub->apply_delay = DatumGetIntervalP(d);
 
-    /* Get destination_relname */
-    d = heap_getattr(tuple, Anum_sub_destination_relname, desc, &isnull);
-    if (isnull)
-      sub->destination_relname = NULL;
-    else
-      sub->destination_relname = pstrdup(NameStr(*DatumGetName(d)));
 
-    elog(LOG, "Loading sub with desc natts: %d, expected: %d", desc->natts, Natts_subscription);
-    elog(LOG, "Loading sub with dest relname: %s", sub->destination_relname);
-    elog(LOG, "Loading sub with slot name: %s", NameStr(subtup->sub_slot_name));
-
-    //sub->destination_relname = pstrdup(NameStr(subtup->sub_destination_relname));
+	/* Get table mappings. */
+	d = heap_getattr(tuple, Anum_sub_table_mappings, desc, &isnull);
+	if (isnull)
+		sub->table_mappings = NIL;
+	else
+	{
+		List		   *table_mappings;
+		table_mappings = textarray_to_list(DatumGetArrayTypeP(d));
+		sub->table_mappings = table_mappings;
+	}
 
 	return sub;
 }

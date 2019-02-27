@@ -392,7 +392,7 @@ pglogical_create_subscription(PG_FUNCTION_ARGS)
 	bool					sync_data = PG_GETARG_BOOL(4);
 	ArrayType			   *forward_origin_names = PG_GETARG_ARRAYTYPE_P(5);
 	Interval			   *apply_delay = PG_GETARG_INTERVAL_P(6);
-	char				   *destination_relname = NameStr(*PG_GETARG_NAME(7));
+	ArrayType			   *table_mappings = PG_GETARG_ARRAYTYPE_P(7);
 	PGconn				   *conn;
 	PGLogicalSubscription	sub;
 	PGLogicalSyncStatus		sync;
@@ -507,7 +507,7 @@ pglogical_create_subscription(PG_FUNCTION_ARGS)
 				  origin.name, sub_name);
 	sub.slot_name = pstrdup(NameStr(slot_name));
 	sub.apply_delay = apply_delay;
-    sub.destination_relname = destination_relname;
+	sub.table_mappings = textarray_to_list(table_mappings);
 
 	create_subscription(&sub);
 
@@ -1932,7 +1932,6 @@ pglogical_show_repset_table_info(PG_FUNCTION_ARGS)
 	nspname = get_namespace_name(RelationGetNamespace(rel));
 	relname = RelationGetRelationName(rel);
 
-    elog(LOG, "Getting replication info for relation from rep set table info function.");
 	/* Build the replication info for the table. */
 	tableinfo = get_table_replication_info(node->node->id, rel,
 										   replication_sets);
@@ -2099,7 +2098,6 @@ pglogical_table_data_filtered(PG_FUNCTION_ARGS)
 	replication_sets = get_replication_sets(node->node->id,
 											replication_sets,
 											false);
-    elog(LOG, "Getting replication info for relation from data filtered function.");
 	tableinfo = get_table_replication_info(node->node->id, rel,
 										   replication_sets);
 

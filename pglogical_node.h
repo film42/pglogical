@@ -48,7 +48,7 @@ typedef struct PGLogicalSubscription
 	char	   *slot_name;
 	List	   *replication_sets;
 	List	   *forward_origins;
-	char       *destination_relname;
+	List       *table_mappings;
 } PGLogicalSubscription;
 
 extern void create_node(PGLogicalNode *node);
@@ -72,6 +72,7 @@ extern PGLogicalLocalNode *get_local_node(bool for_update, bool missing_ok);
 extern void create_subscription(PGLogicalSubscription *sub);
 extern void alter_subscription(PGLogicalSubscription *sub);
 extern void drop_subscription(Oid subid);
+extern char *get_remapped_relname(PGLogicalSubscription *sub, char *relname);
 
 extern PGLogicalSubscription *get_subscription(Oid subid);
 extern PGLogicalSubscription *get_subscription_by_name(const char *name,

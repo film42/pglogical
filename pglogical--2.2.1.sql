@@ -30,7 +30,7 @@ CREATE TABLE pglogical.subscription (
     sub_replication_sets text[],
     sub_forward_origins text[],
     sub_apply_delay interval NOT NULL DEFAULT '0',
-    sub_destination_relname name NOT NULL DEFAULT ''
+    sub_table_mappings text[] CHECK (CARDINALITY(sub_table_mappings) % 2 = 0)
 );
 
 CREATE TABLE pglogical.local_sync_status (
@@ -57,7 +57,7 @@ RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'pglogical_alte
 CREATE FUNCTION pglogical.create_subscription(subscription_name name, provider_dsn text,
     replication_sets text[] = '{default,default_insert_only,ddl_sql}', synchronize_structure boolean = false,
     synchronize_data boolean = true, forward_origins text[] = '{all}', apply_delay interval DEFAULT '0',
-    destination_relname name = '')
+    table_mappings text[] = '{}')
 RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'pglogical_create_subscription';
 CREATE FUNCTION pglogical.drop_subscription(subscription_name name, ifexists boolean DEFAULT false)
 RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'pglogical_drop_subscription';
