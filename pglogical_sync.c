@@ -389,6 +389,21 @@ make_copy_attnamelist(PGLogicalRelation *rel)
 	return attnamelist;
 }
 
+static char * get_relname_from_my_subscription(char * relname)
+{
+
+  if (MySubscription == NULL) {
+    elog(LOG, "MySubscription in sync mode is null (rel: %s)", relname);
+  }
+
+  elog(LOG, "MySubscription dest relanme: %s (remoterel: %s)", MySubscription->destination_relname, relname);
+
+  if (MySubscription != NULL && strlen(MySubscription->destination_relname) > 0)
+    return MySubscription->destination_relname;
+
+  return relname;
+}
+
 /*
  * COPY single table over wire.
  */
@@ -402,16 +417,27 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 	char	   *copybuf;
 	List	   *attnamelist;
 	ListCell   *lc;
+	char       *local_relname;
+    char       *remote_relname = remoterel->relname;
 	bool		first;
 	StringInfoData	query;
 	StringInfoData	attlist;
 	MemoryContext	curctx = CurrentMemoryContext,
 					oldctx;
 
+    local_relname = get_relname_from_my_subscription(remoterel->relname);
+
+    elog(LOG, "We are going to start copying data for table: %s", remoterel->relname);
+
 	/* Build the relation map. */
 	StartTransactionCommand();
 	oldctx = MemoryContextSwitchTo(curctx);
+
+    /* HACK: Rename the cached remote relname to the local destination override. */
+    remoterel->relname = local_relname;
 	pglogical_relation_cache_updater(remoterel);
+    remoterel->relname = remote_relname;
+
 	rel = pglogical_relation_open(remoterel->relid, AccessShareLock);
 	attnamelist = make_copy_attnamelist(rel);
 
@@ -506,8 +532,8 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 	appendStringInfo(&query, "COPY %s.%s ",
 					 PQescapeIdentifier(origin_conn, remoterel->nspname,
 										strlen(remoterel->nspname)),
-					 PQescapeIdentifier(origin_conn, remoterel->relname,
-										strlen(remoterel->relname)));
+					 PQescapeIdentifier(origin_conn, local_relname,
+										strlen(local_relname)));
 	if (list_length(attnamelist))
 		appendStringInfo(&query, "(%s) ", attlist.data);
 	appendStringInfoString(&query, "FROM stdin");
@@ -584,6 +610,9 @@ copy_tables_data(char *sub_name, const char *origin_dsn,
 	{
 		RangeVar	*rv = lfirst(lc);
 		PGLogicalRemoteRel	*remoterel;
+
+        /* local_copytable = makeRangeVar(NameStr(MySyncWorker->nspname), */
+        /*                                local_relname, -1); */
 
 		remoterel = pg_logical_get_remote_repset_table(origin_conn, rv,
 													   replication_sets);
@@ -914,13 +943,15 @@ pglogical_sync_subscription(PGLogicalSubscription *sub)
 }
 
 char
-pglogical_sync_table(PGLogicalSubscription *sub, RangeVar *table,
-					 XLogRecPtr *status_lsn)
+pglogical_sync_table(PGLogicalSubscription *sub, RangeVar *local_table,
+                     RangeVar *remote_table, XLogRecPtr *status_lsn)
 {
 	PGconn	   *origin_conn_repl, *origin_conn;
 	RepOriginId	originid;
 	char	   *snapshot;
 	PGLogicalSyncStatus	   *sync;
+
+    elog(LOG, "Inside pglogical_sync_table and about to work.");
 
 	StartTransactionCommand();
 
@@ -933,7 +964,7 @@ pglogical_sync_table(PGLogicalSubscription *sub, RangeVar *table,
 	}
 
 	/* Check current state of the table. */
-	sync = get_table_sync_status(sub->id, table->schemaname, table->relname, false);
+	sync = get_table_sync_status(sub->id, remote_table->schemaname, remote_table->relname, false);
 	*status_lsn = sync->statuslsn;
 
 	/* Already synchronized, nothing to do here. */
@@ -943,7 +974,7 @@ pglogical_sync_table(PGLogicalSubscription *sub, RangeVar *table,
 
 	/* If previous sync attempt failed, we need to start from beginning. */
 	if (sync->status != SYNC_STATUS_INIT)
-		set_table_sync_status(sub->id, table->schemaname, table->relname,
+		set_table_sync_status(sub->id, remote_table->schemaname, remote_table->relname,
 							  SYNC_STATUS_INIT, InvalidXLogRecPtr);
 
 	CommitTransactionCommand();
@@ -980,13 +1011,15 @@ pglogical_sync_table(PGLogicalSubscription *sub, RangeVar *table,
 		heap_close(replorigin_rel, RowExclusiveLock);
 #endif
 
-		set_table_sync_status(sub->id, table->schemaname, table->relname,
+		set_table_sync_status(sub->id, remote_table->schemaname, remote_table->relname,
 							  SYNC_STATUS_DATA, *status_lsn);
 		CommitTransactionCommand();
 
+        elog(LOG, "We are done with sync status stuff. Time to start copying data.");
+
 		/* Copy data. */
 		copy_tables_data(sub->name, sub->origin_if->dsn,sub->target_if->dsn,
-						 snapshot, list_make1(table), sub->replication_sets,
+						 snapshot, list_make1(remote_table), sub->replication_sets,
 						 sub->slot_name);
 	}
 	PG_END_ENSURE_ERROR_CLEANUP(pglogical_sync_worker_cleanup_error_cb,
@@ -1044,10 +1077,12 @@ pglogical_sync_main(Datum main_arg)
 	XLogRecPtr		lsn;
 	XLogRecPtr		status_lsn;
 	StringInfoData	slot_name;
-	RangeVar	   *copytable = NULL;
+	RangeVar	   *remote_copytable = NULL;
+    RangeVar       *local_copytable = NULL;
 	MemoryContext	saved_ctx;
 	char		   *tablename;
 	char			status;
+    char           *local_relname;
 
 	/* Setup shmem. */
 	pglogical_worker_attach(slot, PGLOGICAL_WORKER_SYNC);
@@ -1085,11 +1120,16 @@ pglogical_sync_main(Datum main_arg)
 	MemoryContextSwitchTo(saved_ctx);
 	CommitTransactionCommand();
 
-	copytable = makeRangeVar(NameStr(MySyncWorker->nspname),
-							 NameStr(MySyncWorker->relname), -1);
+    local_relname = get_relname_from_my_subscription(NameStr(MySyncWorker->relname));
 
-	tablename = quote_qualified_identifier(copytable->schemaname,
-										   copytable->relname);
+	remote_copytable = makeRangeVar(NameStr(MySyncWorker->nspname),
+                                    NameStr(MySyncWorker->relname), -1);
+
+    local_copytable = makeRangeVar(NameStr(MySyncWorker->nspname),
+                                   local_relname, -1);
+
+	tablename = quote_qualified_identifier(local_copytable->schemaname,
+										   local_copytable->relname);
 
 	initStringInfo(&slot_name);
 	appendStringInfo(&slot_name, "%s_%08x", MySubscription->slot_name,
@@ -1098,12 +1138,12 @@ pglogical_sync_main(Datum main_arg)
 	MySubscription->slot_name = slot_name.data;
 
 	elog(LOG, "starting sync of table %s.%s for subscriber %s",
-		 copytable->schemaname, copytable->relname, MySubscription->name);
+		 local_copytable->schemaname, local_copytable->relname, MySubscription->name);
 	elog(DEBUG1, "connecting to provider %s, dsn %s",
 		 MySubscription->origin_if->name, MySubscription->origin_if->dsn);
 
 	/* Do the initial sync first. */
-	status = pglogical_sync_table(MySubscription, copytable, &status_lsn);
+	status = pglogical_sync_table(MySubscription, local_copytable, remote_copytable, &status_lsn);
 	if (status == SYNC_STATUS_SYNCDONE || status == SYNC_STATUS_READY)
 	{
 		pglogical_sync_worker_finish();
@@ -1112,13 +1152,13 @@ pglogical_sync_main(Datum main_arg)
 
 	/* Wait for ack from the main apply thread. */
 	StartTransactionCommand();
-	set_table_sync_status(MySubscription->id, copytable->schemaname,
-						  copytable->relname, SYNC_STATUS_SYNCWAIT,
+	set_table_sync_status(MySubscription->id, remote_copytable->schemaname,
+						  remote_copytable->relname, SYNC_STATUS_SYNCWAIT,
 						  status_lsn);
 	CommitTransactionCommand();
 
-	wait_for_sync_status_change(MySubscription->id, copytable->schemaname,
-								copytable->relname, SYNC_STATUS_CATCHUP,
+	wait_for_sync_status_change(MySubscription->id, remote_copytable->schemaname,
+								remote_copytable->relname, SYNC_STATUS_CATCHUP,
 								&lsn);
 	Assert(lsn == status_lsn);
 

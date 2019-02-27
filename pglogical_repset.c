@@ -422,6 +422,7 @@ get_table_replication_info(Oid nodeid, Relation table,
 	 */
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_REPSET_TABLE, -1);
 	repset_reloid = RangeVarGetRelid(rv, RowExclusiveLock, true);
+
 	/* Backwards compat with 1.1/1.2 where the relation name was different. */
 	if (!OidIsValid(repset_reloid))
 	{

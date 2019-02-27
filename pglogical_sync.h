@@ -53,7 +53,7 @@ typedef struct PGLogicalSyncStatus
 extern void pglogical_sync_worker_finish(void);
 
 extern void pglogical_sync_subscription(PGLogicalSubscription *sub);
-extern char pglogical_sync_table(PGLogicalSubscription *sub, RangeVar *table, XLogRecPtr *status_lsn);
+extern char pglogical_sync_table(PGLogicalSubscription *sub, RangeVar *local_table, RangeVar *remote_table, XLogRecPtr *status_lsn);
 
 extern void create_local_sync_status(PGLogicalSyncStatus *sync);
 extern void drop_subscription_sync_status(Oid subid);
@@ -89,4 +89,3 @@ extern void truncate_table(char *nspname, char *relname);
 extern List *get_subscription_tables(Oid subid);
 
 #endif /* PGLOGICAL_SYNC_H */
-

@@ -48,6 +48,7 @@ typedef struct PGLogicalSubscription
 	char	   *slot_name;
 	List	   *replication_sets;
 	List	   *forward_origins;
+	char       *destination_relname;
 } PGLogicalSubscription;
 
 extern void create_node(PGLogicalNode *node);
