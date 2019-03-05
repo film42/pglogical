@@ -192,6 +192,60 @@ should_apply_changes_for_rel(const char *nspname, const char *relname)
 	return true;
 }
 
+bool pglogical_should_filter_record(PGLogicalTupleData *newtup, PGLogicalRelation *rel, List *row_filters)
+{
+	ListCell *lc;
+	/*
+	 * Proccess sub row filters: This is a copy of the output plugin filter.
+	 * XXX: we could probably cache some of the executor stuff.
+	 */
+	if (list_length(row_filters) > 0)
+	{
+		EState		   *estate;
+		ExprContext	   *econtext;
+		HeapTuple       remotetuple;
+		TupleDesc		tupdesc = RelationGetDescr(rel->rel);
+
+
+		remotetuple = heap_form_tuple(tupdesc, newtup->values, newtup->nulls);
+
+		/* Skip empty changes. */
+		if (!remotetuple)
+		{
+			elog(DEBUG1, "pglogical subscription received a null tuple from the publisher");
+			return false;
+		}
+
+		estate = create_estate_for_relation(rel->rel, false);
+		econtext = prepare_per_tuple_econtext(estate, tupdesc);
+
+		ExecStoreTuple(remotetuple, econtext->ecxt_scantuple, InvalidBuffer, false);
+
+		/* Next try the row_filters if there are any. */
+		foreach (lc, row_filters)
+		{
+			Node	   *row_filter = (Node *) lfirst(lc);
+			ExprState  *exprstate = pglogical_prepare_row_filter(row_filter);
+			Datum		res;
+			bool		isnull;
+
+			res = ExecEvalExpr(exprstate, econtext, &isnull, NULL);
+
+			/* NULL is same as filter the message for our use. */
+			if (isnull)
+				return true;
+
+			if (DatumGetBool(res))
+				return true;
+		}
+
+		ExecDropSingleTupleTableSlot(econtext->ecxt_scantuple);
+		FreeExecutorState(estate);
+	}
+
+	return false;
+}
+
 /*
  * Prepare apply state details for errcontext or direct logging.
  *
@@ -210,7 +264,7 @@ format_action_description(
 	appendStringInfoString(si,
 		action_name == NULL ? "(unknown action)" : action_name);
 
-	if (rel != NULL && 
+	if (rel != NULL &&
 		rel->nspname != NULL
 		&& rel->relname != NULL
 		&& !is_ddl_or_drop)
@@ -544,6 +598,12 @@ handle_insert(StringInfo s)
 		return;
 	}
 
+	if (pglogical_should_filter_record(&newtup, rel, NULL))
+	{
+		pglogical_relation_close(rel, NoLock);
+		return;
+	}
+
 	/* Handle multi_insert capabilities. */
 	if (use_multi_insert)
 	{
@@ -665,6 +725,12 @@ handle_update(StringInfo s)
 		return;
 	}
 
+	if (pglogical_should_filter_record(&newtup, rel, NULL))
+	{
+		pglogical_relation_close(rel, NoLock);
+		return;
+	}
+
 	apply_api.do_update(rel, hasoldtup ? &oldtup : &newtup, &newtup);
 
 	pglogical_relation_close(rel, NoLock);
@@ -688,6 +754,12 @@ handle_delete(StringInfo s)
 
 	/* If in list of relations which are being synchronized, skip. */
 	if (!should_apply_changes_for_rel(rel->nspname, rel->relname))
+	{
+		pglogical_relation_close(rel, NoLock);
+		return;
+	}
+
+	if (pglogical_should_filter_record(&oldtup, rel, NULL))
 	{
 		pglogical_relation_close(rel, NoLock);
 		return;
@@ -1455,7 +1527,7 @@ apply_work(PGconn *streamConn)
 
 		if (!in_remote_transaction)
 			process_syncing_tables(last_received);
-		
+
 		/* We must not have switched out of MessageContext by mistake */
 		Assert(CurrentMemoryContext == MessageContext);
 

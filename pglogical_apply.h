@@ -32,4 +32,7 @@ typedef void (*pglogical_apply_mi_add_tuple_fn) (PGLogicalRelation *rel,
 												 PGLogicalTupleData *tup);
 typedef void (*pglogical_apply_mi_finish_fn) (PGLogicalRelation *rel);
 
+bool pglogical_should_filter_record(PGLogicalTupleData *newtup,
+                                    PGLogicalRelation *rel, List *row_filters);
+
 #endif /* PGLOGICAL_APPLY_H */
