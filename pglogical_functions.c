@@ -108,6 +108,9 @@ PG_FUNCTION_INFO_V1(pglogical_show_subscription_status);
 PG_FUNCTION_INFO_V1(pglogical_wait_for_subscription_sync_complete);
 PG_FUNCTION_INFO_V1(pglogical_wait_for_table_sync_complete);
 
+/* Subscription filters. */
+PG_FUNCTION_INFO_V1(pglogical_create_subscription_filter);
+
 /* Replication set manipulation. */
 PG_FUNCTION_INFO_V1(pglogical_create_replication_set);
 PG_FUNCTION_INFO_V1(pglogical_alter_replication_set);
@@ -379,6 +382,27 @@ pglogical_alter_node_drop_interface(PG_FUNCTION_ARGS)
 }
 
 
+Datum
+pglogical_create_subscription_filter(PG_FUNCTION_ARGS)
+{
+  PGLogicalLocalNode *localnode;
+  PGLogicalSubscriptionFilter subscription_filter;
+
+  /* Check that this is actually a node. */
+  localnode = get_local_node(true, false);
+
+  subscription_filter.id = InvalidOid;
+  subscription_filter.nodeid = localnode->node->id;
+  subscription_filter.name = NameStr(*PG_GETARG_NAME(0));
+  subscription_filter.filter = text_to_cstring(PG_GETARG_TEXT_PP(1));
+  subscription_filter.destination_ns = NameStr(*PG_GETARG_NAME(2));
+  subscription_filter.destination_rel = NameStr(*PG_GETARG_NAME(3));
+
+  create_subscription_filter(&subscription_filter);
+
+  PG_RETURN_OID(subscription_filter.id);
+}
+
 /*
  * Connect two existing nodes.
  */
@@ -392,7 +416,7 @@ pglogical_create_subscription(PG_FUNCTION_ARGS)
 	bool					sync_data = PG_GETARG_BOOL(4);
 	ArrayType			   *forward_origin_names = PG_GETARG_ARRAYTYPE_P(5);
 	Interval			   *apply_delay = PG_GETARG_INTERVAL_P(6);
-	ArrayType			   *table_mappings = PG_GETARG_ARRAYTYPE_P(7);
+	ArrayType			   *subscription_filters = PG_GETARG_ARRAYTYPE_P(7);
 	PGconn				   *conn;
 	PGLogicalSubscription	sub;
 	PGLogicalSyncStatus		sync;
@@ -507,7 +531,7 @@ pglogical_create_subscription(PG_FUNCTION_ARGS)
 				  origin.name, sub_name);
 	sub.slot_name = pstrdup(NameStr(slot_name));
 	sub.apply_delay = apply_delay;
-	sub.table_mappings = textarray_to_list(table_mappings);
+	sub.subscription_filters = textarray_to_list(subscription_filters);
 
 	create_subscription(&sub);
 

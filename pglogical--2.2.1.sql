@@ -30,7 +30,17 @@ CREATE TABLE pglogical.subscription (
     sub_replication_sets text[],
     sub_forward_origins text[],
     sub_apply_delay interval NOT NULL DEFAULT '0',
-    sub_table_mappings text[] CHECK (CARDINALITY(sub_table_mappings) % 2 = 0)
+    sub_subscription_filters text[]
+);
+
+CREATE TABLE pglogical.subscription_filter (
+    filter_id oid NOT NULL PRIMARY KEY,
+    filter_nodeid oid NOT NULL,
+    filter_name name NOT NULL,
+    filter pg_node_tree,
+    filter_destination_ns name,
+    filter_destination_rel name,
+    UNIQUE (filter_nodeid, filter_name)
 );
 
 CREATE TABLE pglogical.local_sync_status (
@@ -43,6 +53,9 @@ CREATE TABLE pglogical.local_sync_status (
     UNIQUE (sync_subid, sync_nspname, sync_relname)
 );
 
+
+CREATE FUNCTION pglogical.create_subscription_filter(filter_name name, filter text, destination_schema name, destination_table name)
+RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'pglogical_create_subscription_filter';
 
 CREATE FUNCTION pglogical.create_node(node_name name, dsn text)
 RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'pglogical_create_node';
@@ -57,7 +70,7 @@ RETURNS boolean STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'pglogical_alte
 CREATE FUNCTION pglogical.create_subscription(subscription_name name, provider_dsn text,
     replication_sets text[] = '{default,default_insert_only,ddl_sql}', synchronize_structure boolean = false,
     synchronize_data boolean = true, forward_origins text[] = '{all}', apply_delay interval DEFAULT '0',
-    table_mappings text[] = '{}')
+    subscription_filters text[] = '{}')
 RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'pglogical_create_subscription';
 CREATE FUNCTION pglogical.drop_subscription(subscription_name name, ifexists boolean DEFAULT false)
 RETURNS oid STRICT VOLATILE LANGUAGE c AS 'MODULE_PATHNAME', 'pglogical_drop_subscription';

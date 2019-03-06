@@ -46,6 +46,7 @@
 #define CATALOG_LOCAL_NODE		"local_node"
 #define CATALOG_NODE_INTERFACE	"node_interface"
 #define CATALOG_SUBSCRIPTION	"subscription"
+#define CATALOG_SUBSCRIPTION_FILTER "subscription_filter"
 
 typedef struct NodeTuple
 {
@@ -85,7 +86,7 @@ typedef struct SubscriptionTuple
 	Oid			sub_target_if;
 	bool		sub_enabled;
 	NameData	sub_slot_name;
-	Oid			sub_table_mappings;
+	Oid			sub_subscription_filters;
 } SubscriptionTuple;
 
 #define Natts_subscription			12
@@ -100,7 +101,34 @@ typedef struct SubscriptionTuple
 #define Anum_sub_replication_sets	9
 #define Anum_sub_forward_origins	10
 #define Anum_sub_apply_delay		11
-#define Anum_sub_table_mappings		12
+#define Anum_sub_subscription_filters		12
+
+typedef struct SubscriptionFilterTuple
+{
+	Oid			filter_id;
+  	Oid			filter_nodeid;
+	NameData	filter_name;
+	Oid			filter_filter;
+  	NameData	filter_destination_ns;
+	NameData	filter_destination_rel;
+} SubscriptionFilterTuple;
+
+#define Natts_subscription_filter	    6
+#define Anum_sub_filter_id			    1
+#define Anum_sub_filter_nodeid		    2
+#define Anum_sub_filter_name		    3
+#define Anum_sub_filter_filter	     	4
+#define Anum_sub_filter_destination_ns  5
+#define Anum_sub_filter_destination_rel 6
+
+static
+PGLogicalSubscriptionFilter *get_subscription_filter_by_name(char *name, bool missingok);
+
+static
+PGLogicalSubscriptionFilter *subscription_filter_fromtuple(HeapTuple tuple, TupleDesc desc);
+
+static
+List *get_subscription_filters(Oid nodeid, List *filter_names, bool missing_ok);
 
 /*
  * We impose same validation rules as replication slot name validation does.
@@ -680,6 +708,212 @@ get_node_interface_by_name(Oid nodeid, const char *name, bool missing_ok)
 	return nodeif;
 }
 
+static PGLogicalSubscriptionFilter *subscription_filter_fromtuple(HeapTuple tuple, TupleDesc desc)
+{
+	SubscriptionFilterTuple *filtertup = (SubscriptionFilterTuple *) GETSTRUCT(tuple);
+	Datum		d;
+	bool		isnull;
+
+	PGLogicalSubscriptionFilter *filter =
+		(PGLogicalSubscriptionFilter *) palloc(sizeof(PGLogicalSubscriptionFilter));
+	filter->id = filtertup->filter_id;
+	filter->name = pstrdup(NameStr(filtertup->filter_name));
+	filter->nodeid = get_node(filtertup->filter_nodeid)->id;
+
+    /* Get filter text. */
+    d = heap_getattr(tuple, Anum_sub_filter_filter, desc, &isnull);
+    if (isnull)
+      filter->filter = NULL;
+    else
+      filter->filter = text_to_cstring(DatumGetTextPP(d));
+
+    d = heap_getattr(tuple, Anum_sub_filter_destination_ns, desc, &isnull);
+    if (isnull)
+      filter->destination_ns = NULL;
+    else
+      filter->destination_ns = pstrdup(NameStr(*DatumGetName(d)));
+
+    d = heap_getattr(tuple, Anum_sub_filter_destination_rel, desc, &isnull);
+    if (isnull)
+      filter->destination_rel = NULL;
+    else
+      filter->destination_rel = pstrdup(NameStr(*DatumGetName(d)));
+
+	return filter;
+}
+
+static List *get_subscription_filters(Oid nodeid, List *filter_names, bool missing_ok)
+{
+	RangeVar	   *rv;
+	Relation		rel;
+	ListCell	   *lc;
+	ScanKeyData		key[2];
+	List		   *subscription_filters = NIL;
+    TupleDesc		desc;
+
+	Assert(IsTransactionState());
+
+	rv = makeRangeVar(EXTENSION_NAME, CATALOG_SUBSCRIPTION_FILTER, -1);
+	rel = heap_openrv(rv, RowExclusiveLock);
+
+    desc = RelationGetDescr(rel);
+
+	/* Setup common part of key. */
+	ScanKeyInit(&key[0],
+				Anum_sub_filter_nodeid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(nodeid));
+
+	foreach(lc, filter_names)
+	{
+		char		   *filter_name = lfirst(lc);
+		SysScanDesc		scan;
+		HeapTuple		tuple;
+
+		/* Search for repset record. */
+		ScanKeyInit(&key[1],
+					Anum_sub_filter_name,
+					BTEqualStrategyNumber, F_NAMEEQ,
+					CStringGetDatum(filter_name));
+
+		/* TODO: use index. */
+		scan = systable_beginscan(rel, 0, true, NULL, 2, key);
+		tuple = systable_getnext(scan);
+
+		if (!HeapTupleIsValid(tuple))
+		{
+			if (missing_ok)
+			{
+				systable_endscan(scan);
+				continue;
+			}
+			else
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("subscription filter %s not found", filter_name)));
+		}
+
+		subscription_filters = lappend(subscription_filters,
+                                       subscription_filter_fromtuple(tuple, desc));
+
+		systable_endscan(scan);
+	}
+
+	heap_close(rel, RowExclusiveLock);
+
+	return subscription_filters;
+}
+
+static
+PGLogicalSubscriptionFilter *get_subscription_filter_by_name(char *name, bool missing_ok)
+{
+	PGLogicalSubscriptionFilter *filter;
+	RangeVar	   *rv;
+	Relation		rel;
+	SysScanDesc		scan;
+	HeapTuple		tuple;
+	TupleDesc		desc;
+	ScanKeyData		key[1];
+
+	rv = makeRangeVar(EXTENSION_NAME, CATALOG_SUBSCRIPTION_FILTER, -1);
+	rel = heap_openrv(rv, RowExclusiveLock);
+
+	/* Search for node record. */
+	ScanKeyInit(&key[0],
+				Anum_sub_filter_name,
+				BTEqualStrategyNumber, F_NAMEEQ,
+				CStringGetDatum(name));
+
+	scan = systable_beginscan(rel, 0, true, NULL, 1, key);
+	tuple = systable_getnext(scan);
+
+	if (!HeapTupleIsValid(tuple))
+	{
+		if (missing_ok)
+		{
+			systable_endscan(scan);
+			heap_close(rel, RowExclusiveLock);
+			return NULL;
+		}
+
+		elog(ERROR, "subscriber_filter %s not found", name);
+	}
+
+	desc = RelationGetDescr(rel);
+	filter = subscription_filter_fromtuple(tuple, desc);
+
+	systable_endscan(scan);
+	heap_close(rel, RowExclusiveLock);
+
+	return filter;
+}
+
+/*
+ * Add new subscription filter.
+ */
+void
+create_subscription_filter(PGLogicalSubscriptionFilter *filter)
+{
+	RangeVar   *rv;
+	Relation	rel;
+	TupleDesc	tupDesc;
+	HeapTuple	tup;
+	Datum		values[Natts_subscription_filter];
+	bool		nulls[Natts_subscription_filter];
+	NameData	filter_name;
+	NameData	row_filter;
+    NameData    destination_ns;
+    NameData    destination_rel;
+
+	if (get_subscription_filter_by_name(filter->name, true) != NULL)
+		elog(ERROR, "subscription %s already exists", filter->name);
+
+	/* Generate new id unless one was already specified. */
+	if (filter->id == InvalidOid)
+		filter->id =
+          DatumGetObjectId(hash_any((const unsigned char *) filter->name,
+									  strlen(filter->name)));
+
+	rv = makeRangeVar(EXTENSION_NAME, CATALOG_SUBSCRIPTION_FILTER, -1);
+	rel = heap_openrv(rv, RowExclusiveLock);
+	tupDesc = RelationGetDescr(rel);
+
+	/* Form a tuple. */
+	memset(nulls, false, sizeof(nulls));
+
+	values[Anum_sub_filter_id - 1] = ObjectIdGetDatum(filter->id);
+    values[Anum_sub_filter_nodeid - 1] = ObjectIdGetDatum(filter->nodeid);
+	namestrcpy(&filter_name, filter->name);
+	values[Anum_sub_filter_name - 1] = NameGetDatum(&filter_name);
+	namestrcpy(&row_filter, filter->filter);
+	values[Anum_sub_filter_filter - 1] = NameGetDatum(&row_filter);
+
+    if (strlen(filter->destination_ns) > 0) {
+      namestrcpy(&destination_ns, filter->destination_ns);
+      values[Anum_sub_filter_destination_ns - 1] = NameGetDatum(&destination_ns);
+    } else {
+      nulls[Anum_sub_filter_destination_ns - 1] = true;
+    }
+
+    if (strlen(filter->destination_rel) > 0) {
+      namestrcpy(&destination_rel, filter->destination_rel);
+      values[Anum_sub_filter_destination_rel - 1] = NameGetDatum(&destination_rel);
+    } else {
+      nulls[Anum_sub_filter_destination_rel - 1] = true;
+    }
+
+	tup = heap_form_tuple(tupDesc, values, nulls);
+
+	/* Insert the tuple to the catalog. */
+	CatalogTupleInsert(rel, tup);
+
+	/* Cleanup. */
+	heap_freetuple(tup);
+	heap_close(rel, RowExclusiveLock);
+
+	CommandCounterIncrement();
+}
+
 /*
  * Add new subscription to catalog.
  */
@@ -742,11 +976,11 @@ create_subscription(PGLogicalSubscription *sub)
 	else
 		nulls[Anum_sub_apply_delay - 1] = true;
 
-	if (list_length(sub->table_mappings) > 0)
-		values[Anum_sub_table_mappings - 1] =
-			PointerGetDatum(strlist_to_textarray(sub->table_mappings));
+	if (list_length(sub->subscription_filters) > 0)
+		values[Anum_sub_subscription_filters - 1] =
+			PointerGetDatum(strlist_to_textarray(sub->subscription_filters));
 	else
-		nulls[Anum_sub_table_mappings - 1] = true;
+		nulls[Anum_sub_subscription_filters - 1] = true;
 
 	tup = heap_form_tuple(tupDesc, values, nulls);
 
@@ -832,11 +1066,11 @@ alter_subscription(PGLogicalSubscription *sub)
 
 	values[Anum_sub_apply_delay - 1] = IntervalPGetDatum(sub->apply_delay);
 
-	if (list_length(sub->table_mappings) > 0)
-		values[Anum_sub_table_mappings - 1] =
-			PointerGetDatum(strlist_to_textarray(sub->table_mappings));
+	if (list_length(sub->subscription_filters) > 0)
+		values[Anum_sub_subscription_filters - 1] =
+			PointerGetDatum(strlist_to_textarray(sub->subscription_filters));
 	else
-		nulls[Anum_sub_table_mappings - 1] = true;
+		nulls[Anum_sub_subscription_filters - 1] = true;
 
 	newtup = heap_modify_tuple(oldtup, tupDesc, values, nulls, replaces);
 
@@ -901,11 +1135,11 @@ get_remapped_relname(PGLogicalSubscription *sub, char *relname)
 	bool return_next = false;
 
 	/* There are no table mappings associated with this subscription. */
-	if (list_length(sub->table_mappings) == 0)
+	if (list_length(sub->subscription_filters) == 0)
 		return relname;
 
 	/* Try to find a mapping on the subscription. */
-	foreach (lc, sub->table_mappings)
+	foreach (lc, sub->subscription_filters)
 	{
 		char *mapping_relname = (char *) lfirst(lc);
 
@@ -970,15 +1204,19 @@ subscription_fromtuple(HeapTuple tuple, TupleDesc desc)
 
 
 	/* Get table mappings. */
-	d = heap_getattr(tuple, Anum_sub_table_mappings, desc, &isnull);
+	d = heap_getattr(tuple, Anum_sub_subscription_filters, desc, &isnull);
 	if (isnull)
-		sub->table_mappings = NIL;
+		sub->subscription_filters = NIL;
 	else
 	{
-		List		   *table_mappings;
-		table_mappings = textarray_to_list(DatumGetArrayTypeP(d));
-		sub->table_mappings = table_mappings;
+		List		   *subscription_filters;
+		subscription_filters = textarray_to_list(DatumGetArrayTypeP(d));
+		sub->subscription_filters = subscription_filters;
 	}
+
+    /* Load all of the subscription filters associated with this subscription */
+    sub->subscription_filter_items =
+      get_subscription_filters(sub->target->id, sub->subscription_filters, true);
 
 	return sub;
 }

@@ -34,6 +34,7 @@ static HTAB *PGLogicalRelationHash = NULL;
 
 static void pglogical_relcache_init(void);
 static int tupdesc_get_att_by_name(TupleDesc desc, const char *attname);
+static void relation_entry_open(PGLogicalRelation *entry, LOCKMODE lockmode);
 
 static void
 relcache_free_entry(PGLogicalRelation *entry)
@@ -54,29 +55,15 @@ relcache_free_entry(PGLogicalRelation *entry)
 	if (entry->attmap)
 		pfree(entry->attmap);
 
+    entry->free_on_close = false;
 	entry->natts = 0;
 	entry->reloid = InvalidOid;
 	entry->rel = NULL;
 }
 
-
-PGLogicalRelation *
-pglogical_relation_open(uint32 remoteid, LOCKMODE lockmode)
+static void
+relation_entry_open(PGLogicalRelation *entry, LOCKMODE lockmode)
 {
-	PGLogicalRelation *entry;
-	bool		found;
-
-	if (PGLogicalRelationHash == NULL)
-		pglogical_relcache_init();
-
-	/* Search for existing entry. */
-	entry = hash_search(PGLogicalRelationHash, (void *) &remoteid,
-						HASH_FIND, &found);
-
-	if (!found)
-		elog(ERROR, "cache lookup failed for remote relation %u",
-			 remoteid);
-
 	/* Need to update the local cache? */
 	if (!OidIsValid(entry->reloid))
 	{
@@ -118,8 +105,65 @@ pglogical_relation_open(uint32 remoteid, LOCKMODE lockmode)
 	}
 	else if (!entry->rel)
 		entry->rel = heap_open(entry->reloid, lockmode);
+}
+
+PGLogicalRelation *
+pglogical_relation_open(uint32 remoteid, LOCKMODE lockmode)
+{
+	PGLogicalRelation *entry;
+	bool		found;
+
+	if (PGLogicalRelationHash == NULL)
+		pglogical_relcache_init();
+
+	/* Search for existing entry. */
+	entry = hash_search(PGLogicalRelationHash, (void *) &remoteid,
+						HASH_FIND, &found);
+
+	if (!found)
+		elog(ERROR, "cache lookup failed for remote relation %u",
+			 remoteid);
+
+    relation_entry_open(entry, lockmode);
 
 	return entry;
+}
+
+PGLogicalRelation *
+pglogical_relation_new(char *schemaname, char *relname,
+                             int natts, char **attnames)
+{
+  int i;
+  PGLogicalRelation  *entry = palloc0(sizeof(PGLogicalRelation));
+
+  entry->nspname = pstrdup(schemaname);
+  entry->relname = pstrdup(relname);
+  entry->natts = natts;
+  entry->attnames = palloc(natts * sizeof(char *));
+  for (i = 0; i < natts; i++)
+    entry->attnames[i] = pstrdup(attnames[i]);
+  entry->attmap = palloc(natts * sizeof(int));
+  entry->free_on_close = true;
+
+  return entry;
+}
+
+void
+pglogical_relation_free_and_close(PGLogicalRelation *rel, LOCKMODE lockmode)
+{
+  if (rel == NULL)
+    return;
+
+  if (rel->rel != NULL)
+    pglogical_relation_close(rel, lockmode);
+
+  relcache_free_entry(rel);
+  pfree(rel);
+}
+
+void pglogical_relation_open_relation(PGLogicalRelation *relation,
+                                      LOCKMODE lockmode) {
+  relation_entry_open(relation, lockmode);
 }
 
 void
@@ -134,10 +178,10 @@ pglogical_relation_cache_update(uint32 remoteid, char *schemaname,
 	if (PGLogicalRelationHash == NULL)
 		pglogical_relcache_init();
 
-	if (MySubscription == NULL)
-		elog(ERROR, "No subscription available in process.");
+	// if (MySubscription == NULL)
+    // elog(ERROR, "No subscription available in process.");
 
-	relname = get_remapped_relname(MySubscription, relname);
+	// relname = get_remapped_relname(MySubscription, relname);
 
 	/*
 	 * HASH_ENTER returns the existing entry if present or creates a new one.
@@ -157,6 +201,7 @@ pglogical_relation_cache_update(uint32 remoteid, char *schemaname,
 	for (i = 0; i < natts; i++)
 		entry->attnames[i] = pstrdup(attnames[i]);
 	entry->attmap = palloc(natts * sizeof(int));
+    entry->free_on_close = false;
 	MemoryContextSwitchTo(oldcontext);
 
 	/* XXX Should we validate the relation against local schema here? */
@@ -193,6 +238,7 @@ pglogical_relation_cache_updater(PGLogicalRemoteRel *remoterel)
 	for (i = 0; i < remoterel->natts; i++)
 		entry->attnames[i] = pstrdup(remoterel->attnames[i]);
 	entry->attmap = palloc(remoterel->natts * sizeof(int));
+    entry->free_on_close = false;
 	MemoryContextSwitchTo(oldcontext);
 
 	/* XXX Should we validate the relation against local schema here? */
@@ -203,8 +249,12 @@ pglogical_relation_cache_updater(PGLogicalRemoteRel *remoterel)
 void
 pglogical_relation_close(PGLogicalRelation * rel, LOCKMODE lockmode)
 {
-	heap_close(rel->rel, lockmode);
-	rel->rel = NULL;
+    if (rel->free_on_close)
+      pglogical_relation_free_and_close(rel, lockmode);
+    else {
+      heap_close(rel->rel, lockmode);
+      rel->rel = NULL;
+    }
 }
 
 static void

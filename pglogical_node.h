@@ -48,8 +48,19 @@ typedef struct PGLogicalSubscription
 	char	   *slot_name;
 	List	   *replication_sets;
 	List	   *forward_origins;
-	List       *table_mappings;
+	List       *subscription_filters;
+	List       *subscription_filter_items;
 } PGLogicalSubscription;
+
+typedef struct PGLogicalSubscriptionFilter
+{
+  Oid id;
+  Oid nodeid;
+  char *name;
+  char *filter;
+  char *destination_ns;
+  char *destination_rel;
+} PGLogicalSubscriptionFilter;
 
 extern void create_node(PGLogicalNode *node);
 extern void drop_node(Oid nodeid);
@@ -68,6 +79,8 @@ extern PGlogicalInterface *get_node_interface_by_name(Oid nodeid,
 extern void create_local_node(Oid nodeid, Oid ifid);
 extern void drop_local_node(void);
 extern PGLogicalLocalNode *get_local_node(bool for_update, bool missing_ok);
+
+extern void create_subscription_filter(PGLogicalSubscriptionFilter *filter);
 
 extern void create_subscription(PGLogicalSubscription *sub);
 extern void alter_subscription(PGLogicalSubscription *sub);

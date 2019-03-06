@@ -192,58 +192,84 @@ should_apply_changes_for_rel(const char *nspname, const char *relname)
 	return true;
 }
 
-bool pglogical_should_filter_record(PGLogicalTupleData *newtup, PGLogicalRelation *rel, List *row_filters)
+bool pglogical_should_filter_record(PGLogicalTupleData *newtup, PGLogicalRelation **default_rel_ptr, List *sub_filters)
 {
-	ListCell *lc;
-	/*
-	 * Proccess sub row filters: This is a copy of the output plugin filter.
-	 * XXX: we could probably cache some of the executor stuff.
-	 */
-	if (list_length(row_filters) > 0)
-	{
-		EState		   *estate;
-		ExprContext	   *econtext;
-		HeapTuple       remotetuple;
-		TupleDesc		tupdesc = RelationGetDescr(rel->rel);
+  ListCell *lc;
+  EState		   *estate;
+  ExprContext	   *econtext;
+  PGLogicalRelation *default_rel = *default_rel_ptr;
+  /*
+   * Proccess sub row filters: This is a copy of the output plugin filter.
+   * XXX: we could probably cache some of the executor stuff.
+   */
+  if (list_length(sub_filters) == 0)
+    return false;
 
+  /* Next try the subscription filters if there are any. */
+  foreach (lc, sub_filters) {
+    TupleDesc tupdesc;
+    PGLogicalSubscriptionFilter *sub_filter;
+    Node *row_filter;
+    HeapTuple remotetuple;
+    PGLogicalRelation *destination_rel = NULL;
+    Relation rel;
 
-		remotetuple = heap_form_tuple(tupdesc, newtup->values, newtup->nulls);
+    Datum		res;
+    bool		isnull;
+    ExprState  *exprstate;
 
-		/* Skip empty changes. */
-		if (!remotetuple)
-		{
-			elog(DEBUG1, "pglogical subscription received a null tuple from the publisher");
-			return false;
-		}
+    sub_filter = (PGLogicalSubscriptionFilter *) lfirst(lc);
 
-		estate = create_estate_for_relation(rel->rel, false);
-		econtext = prepare_per_tuple_econtext(estate, tupdesc);
+    /* TODO: Check for mis-match size between natts and newtup->values */
+    if (strlen(sub_filter->destination_rel) > 0) {
+      destination_rel = pglogical_relation_new(sub_filter->destination_ns, sub_filter->destination_rel,
+                                               default_rel->natts, default_rel->attnames);
+      pglogical_relation_open_relation(destination_rel, RowExclusiveLock);
+    }
 
-		ExecStoreTuple(remotetuple, econtext->ecxt_scantuple, InvalidBuffer, false);
+    rel = destination_rel ? destination_rel->rel : default_rel->rel;
+    tupdesc = RelationGetDescr(rel);
+    remotetuple = heap_form_tuple(tupdesc, newtup->values, newtup->nulls);
 
-		/* Next try the row_filters if there are any. */
-		foreach (lc, row_filters)
-		{
-			Node	   *row_filter = (Node *) lfirst(lc);
-			ExprState  *exprstate = pglogical_prepare_row_filter(row_filter);
-			Datum		res;
-			bool		isnull;
+    /* Skip empty changes. */
+    if (!remotetuple) {
+      elog(DEBUG1, "pglogical subscription received a null tuple from the publisher");
 
-			res = ExecEvalExpr(exprstate, econtext, &isnull, NULL);
+      if (destination_rel != NULL)
+        pglogical_relation_free_and_close(destination_rel, NoLock);
 
-			/* NULL is same as filter the message for our use. */
-			if (isnull)
-				return true;
+      return false;
+    }
 
-			if (DatumGetBool(res))
-				return true;
-		}
+    estate = create_estate_for_relation(rel, false);
+    econtext = prepare_per_tuple_econtext(estate, tupdesc);
 
-		ExecDropSingleTupleTableSlot(econtext->ecxt_scantuple);
-		FreeExecutorState(estate);
-	}
+    ExecStoreTuple(remotetuple, econtext->ecxt_scantuple, InvalidBuffer, false);
 
-	return false;
+    sub_filter = (PGLogicalSubscriptionFilter *) lfirst(lc);
+    row_filter = (Node *) sub_filter->filter;
+
+    exprstate = pglogical_prepare_row_filter(row_filter);
+
+    res = ExecEvalExpr(exprstate, econtext, &isnull, NULL);
+
+    ExecDropSingleTupleTableSlot(econtext->ecxt_scantuple);
+    FreeExecutorState(estate);
+
+    /* NULL is same as filter the message for our use. */
+    if (isnull || DatumGetBool(res)) {
+      pglogical_relation_close(default_rel, NoLock);
+      /* HACK: This is really nasty. Make a better func signature. */
+      *default_rel_ptr = destination_rel;
+      return true;
+    }
+
+    /* Ensure the dest relation is closed if it doesn't match. */
+    if (destination_rel != NULL)
+      pglogical_relation_free_and_close(destination_rel, NoLock);
+  }
+
+  return false;
 }
 
 /*
@@ -598,7 +624,7 @@ handle_insert(StringInfo s)
 		return;
 	}
 
-	if (pglogical_should_filter_record(&newtup, rel, NULL))
+	if (pglogical_should_filter_record(&newtup, &rel, MySubscription->subscription_filter_items))
 	{
 		pglogical_relation_close(rel, NoLock);
 		return;
@@ -725,7 +751,7 @@ handle_update(StringInfo s)
 		return;
 	}
 
-	if (pglogical_should_filter_record(&newtup, rel, NULL))
+	if (pglogical_should_filter_record(&newtup, &rel, MySubscription->subscription_filter_items))
 	{
 		pglogical_relation_close(rel, NoLock);
 		return;
@@ -759,7 +785,7 @@ handle_delete(StringInfo s)
 		return;
 	}
 
-	if (pglogical_should_filter_record(&oldtup, rel, NULL))
+	if (pglogical_should_filter_record(&oldtup, &rel, MySubscription->subscription_filter_items))
 	{
 		pglogical_relation_close(rel, NoLock);
 		return;

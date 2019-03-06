@@ -43,7 +43,15 @@ typedef struct PGLogicalRelation
 
 	/* Additional cache, only valid as long as relation mapping is. */
 	bool		hasTriggers;
+
+  bool free_on_close;
 } PGLogicalRelation;
+
+extern PGLogicalRelation *pglogical_relation_new(char *schemaname, char *relname,
+                                         int natts, char **attnames);
+extern void pglogical_relation_free_and_close(PGLogicalRelation *rel, LOCKMODE lockmode);
+extern void pglogical_relation_open_relation(PGLogicalRelation *relation,
+                                             LOCKMODE lockmode);
 
 extern void pglogical_relation_cache_update(uint32 remoteid,
 											 char *schemaname, char *relname,
