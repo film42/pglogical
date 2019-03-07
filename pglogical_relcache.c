@@ -249,12 +249,11 @@ pglogical_relation_cache_updater(PGLogicalRemoteRel *remoterel)
 void
 pglogical_relation_close(PGLogicalRelation * rel, LOCKMODE lockmode)
 {
-    if (rel->free_on_close)
-      pglogical_relation_free_and_close(rel, lockmode);
-    else {
-      heap_close(rel->rel, lockmode);
-      rel->rel = NULL;
-    }
+  heap_close(rel->rel, lockmode);
+  rel->rel = NULL;
+
+  if (rel->free_on_close)
+    pglogical_relation_free_and_close(rel, lockmode);
 }
 
 static void

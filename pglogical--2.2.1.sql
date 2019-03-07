@@ -37,9 +37,9 @@ CREATE TABLE pglogical.subscription_filter (
     filter_id oid NOT NULL PRIMARY KEY,
     filter_nodeid oid NOT NULL,
     filter_name name NOT NULL,
-    filter pg_node_tree,
-    filter_destination_ns name,
-    filter_destination_rel name,
+    filter pg_node_tree NOT NULL,
+    filter_destination_ns name NOT NULL,
+    filter_destination_rel name NOT NULL,
     UNIQUE (filter_nodeid, filter_name)
 );
 

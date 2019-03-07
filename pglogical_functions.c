@@ -149,6 +149,8 @@ static void gen_slot_name(Name slot_name, char *dbname,
 						  const char *provider_name,
 						  const char *subscriber_name);
 
+static Node *parse_row_filter(Relation rel, char *row_filter_str);
+
 bool in_pglogical_replicate_ddl_command = false;
 
 static PGLogicalLocalNode *
@@ -387,6 +389,9 @@ pglogical_create_subscription_filter(PG_FUNCTION_ARGS)
 {
   PGLogicalLocalNode *localnode;
   PGLogicalSubscriptionFilter subscription_filter;
+  Node *row_filter;
+  RangeVar *rv;
+  Relation rel;
 
   /* Check that this is actually a node. */
   localnode = get_local_node(true, false);
@@ -394,11 +399,18 @@ pglogical_create_subscription_filter(PG_FUNCTION_ARGS)
   subscription_filter.id = InvalidOid;
   subscription_filter.nodeid = localnode->node->id;
   subscription_filter.name = NameStr(*PG_GETARG_NAME(0));
-  subscription_filter.filter = text_to_cstring(PG_GETARG_TEXT_PP(1));
   subscription_filter.destination_ns = NameStr(*PG_GETARG_NAME(2));
   subscription_filter.destination_rel = NameStr(*PG_GETARG_NAME(3));
 
+  /* parse the filter */
+  rv = makeRangeVar(subscription_filter.destination_ns, subscription_filter.destination_rel, -1);
+  rel = heap_openrv(rv, ShareRowExclusiveLock);
+  row_filter = parse_row_filter(rel, text_to_cstring(PG_GETARG_TEXT_PP(1)));
+  subscription_filter.filter = nodeToString(row_filter);
+
   create_subscription_filter(&subscription_filter);
+
+  heap_close(rel, NoLock);
 
   PG_RETURN_OID(subscription_filter.id);
 }

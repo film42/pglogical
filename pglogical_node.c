@@ -844,7 +844,6 @@ PGLogicalSubscriptionFilter *get_subscription_filter_by_name(char *name, bool mi
 
 	systable_endscan(scan);
 	heap_close(rel, RowExclusiveLock);
-
 	return filter;
 }
 
@@ -861,7 +860,6 @@ create_subscription_filter(PGLogicalSubscriptionFilter *filter)
 	Datum		values[Natts_subscription_filter];
 	bool		nulls[Natts_subscription_filter];
 	NameData	filter_name;
-	NameData	row_filter;
     NameData    destination_ns;
     NameData    destination_rel;
 
@@ -885,8 +883,7 @@ create_subscription_filter(PGLogicalSubscriptionFilter *filter)
     values[Anum_sub_filter_nodeid - 1] = ObjectIdGetDatum(filter->nodeid);
 	namestrcpy(&filter_name, filter->name);
 	values[Anum_sub_filter_name - 1] = NameGetDatum(&filter_name);
-	namestrcpy(&row_filter, filter->filter);
-	values[Anum_sub_filter_filter - 1] = NameGetDatum(&row_filter);
+	values[Anum_sub_filter_filter - 1] = CStringGetTextDatum(filter->filter);
 
     if (strlen(filter->destination_ns) > 0) {
       namestrcpy(&destination_ns, filter->destination_ns);
