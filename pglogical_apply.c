@@ -243,7 +243,7 @@ bool pglogical_should_filter_record(PGLogicalTupleData *newtup, PGLogicalRelatio
       elog(DEBUG1, "pglogical subscription received a null tuple from the publisher");
 
       if (destination_rel != NULL)
-        pglogical_relation_free_and_close(destination_rel, NoLock);
+        pglogical_relation_close(destination_rel, NoLock);
 
       return false;
     }
@@ -273,17 +273,19 @@ bool pglogical_should_filter_record(PGLogicalTupleData *newtup, PGLogicalRelatio
     FreeExecutorState(estate);
     elog(WARNING, "We freed the estate");
 
+    elog(WARNING, "We found nil: %d, or datum matched: %d", isnull, DatumGetBool(res));
+
     /* NULL is same as filter the message for our use. */
     if (isnull) {
       elog(WARNING, "Found a null record so we're calling it a skip");
-      pglogical_relation_free_and_close(destination_rel, NoLock);
+      pglogical_relation_close(destination_rel, NoLock);
       elog(WARNING, "closed the new relation");
       return false;
     }
 
     /* Check for a match */
     if (DatumGetBool(res)) {
-      elog(WARNING, "We found nil: %d, or datum matched: %d", isnull, DatumGetBool(res));
+      elog(WARNING, "Found a match");
       pglogical_relation_close(default_rel, NoLock);
       elog(WARNING, "closed the old relation");
       /* HACK: This is really nasty. Make a better func signature. */
@@ -292,9 +294,13 @@ bool pglogical_should_filter_record(PGLogicalTupleData *newtup, PGLogicalRelatio
       return true;
     }
 
+    elog(WARNING, "Filter did not match. Clearing dest relation.");
+
     /* Ensure the dest relation is closed if it doesn't match. */
     if (destination_rel != NULL)
-      pglogical_relation_free_and_close(destination_rel, NoLock);
+      pglogical_relation_close(destination_rel, NoLock);
+
+    elog(WARNING, "Loop completed. On to next filter...");
   }
 
   /* Otherwise it doesn't go through */

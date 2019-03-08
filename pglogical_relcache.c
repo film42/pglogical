@@ -157,8 +157,11 @@ pglogical_relation_free_and_close(PGLogicalRelation *rel, LOCKMODE lockmode)
   if (rel->rel != NULL)
     pglogical_relation_close(rel, lockmode);
 
+  elog(WARNING, "We closed a pglogical relation");
   relcache_free_entry(rel);
+  elog(WARNING, "We freed a pglogical relation entry");
   pfree(rel);
+  elog(WARNING, "We freed a pglogical relation (all)");
 }
 
 void pglogical_relation_open_relation(PGLogicalRelation *relation,
