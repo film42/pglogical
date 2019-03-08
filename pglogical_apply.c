@@ -199,7 +199,7 @@ bool pglogical_should_filter_record(PGLogicalTupleData *newtup, PGLogicalRelatio
   ExprContext	   *econtext;
   PGLogicalRelation *default_rel = *default_rel_ptr;
 
-  elog(WARNING, "Going to filter a record maybe");
+  // elog(WARNING, "Going to filter a record maybe");
 
   /* If we don't have any filters, let everything through */
   if (list_length(sub_filters) == 0)
@@ -224,19 +224,19 @@ bool pglogical_should_filter_record(PGLogicalTupleData *newtup, PGLogicalRelatio
     /* TODO: Check for mis-match size between natts and newtup->values */
     /* TODO: Verify that this relation doesn't match the origin relation name */
     if (strlen(sub_filter->destination_rel) > 0) {
-      elog(WARNING, "We're opening a new relation %s.%s", sub_filter->destination_ns, sub_filter->destination_rel);
+      // elog(WARNING, "We're opening a new relation %s.%s", sub_filter->destination_ns, sub_filter->destination_rel);
       destination_rel = pglogical_relation_new(sub_filter->destination_ns, sub_filter->destination_rel,
                                                default_rel->natts, default_rel->attnames);
-      elog(WARNING, "We have a relation %s.%s", sub_filter->destination_ns, sub_filter->destination_rel);
+      // elog(WARNING, "We have a relation %s.%s", sub_filter->destination_ns, sub_filter->destination_rel);
       pglogical_relation_open_relation(destination_rel, RowExclusiveLock);
-      elog(WARNING, "We opened relation %s.%s", sub_filter->destination_ns, sub_filter->destination_rel);
+      // elog(WARNING, "We opened relation %s.%s", sub_filter->destination_ns, sub_filter->destination_rel);
     }
 
     rel = destination_rel ? destination_rel->rel : default_rel->rel;
     tupdesc = RelationGetDescr(rel);
-    elog(WARNING, "Creating heap form tuple");
+    // elog(WARNING, "Creating heap form tuple");
     remotetuple = heap_form_tuple(tupdesc, newtup->values, newtup->nulls);
-    elog(WARNING, "Houston we have a tuple");
+    // elog(WARNING, "Houston we have a tuple");
 
     /* Skip empty changes. */
     if (!remotetuple) {
@@ -251,56 +251,56 @@ bool pglogical_should_filter_record(PGLogicalTupleData *newtup, PGLogicalRelatio
     estate = create_estate_for_relation(rel, false);
     econtext = prepare_per_tuple_econtext(estate, tupdesc);
 
-    elog(WARNING, "We have estate and econtext");
+    // elog(WARNING, "We have estate and econtext");
 
     ExecStoreTuple(remotetuple, econtext->ecxt_scantuple, InvalidBuffer, false);
 
-    elog(WARNING, "We have stored the remotetuple temporarily");
+    // elog(WARNING, "We have stored the remotetuple temporarily");
 
-    elog(WARNING, "We are preparing the row filter");
+    // elog(WARNING, "We are preparing the row filter");
 
     exprstate = pglogical_prepare_row_filter(row_filter);
 
-    elog(WARNING, "We are eavluating the expr state");
+    // elog(WARNING, "We are eavluating the expr state");
 
     res = ExecEvalExpr(exprstate, econtext, &isnull, NULL);
 
-    elog(WARNING, "We have a response");
+    // elog(WARNING, "We have a response");
 
     ExecDropSingleTupleTableSlot(econtext->ecxt_scantuple);
 
-    elog(WARNING, "We dropped the tuple");
+    // elog(WARNING, "We dropped the tuple");
     FreeExecutorState(estate);
-    elog(WARNING, "We freed the estate");
+    // elog(WARNING, "We freed the estate");
 
-    elog(WARNING, "We found nil: %d, or datum matched: %d", isnull, DatumGetBool(res));
+    // elog(WARNING, "We found nil: %d, or datum matched: %d", isnull, DatumGetBool(res));
 
     /* NULL is same as filter the message for our use. */
     if (isnull) {
-      elog(WARNING, "Found a null record so we're calling it a skip");
+      // elog(WARNING, "Found a null record so we're calling it a skip");
       pglogical_relation_close(destination_rel, NoLock);
-      elog(WARNING, "closed the new relation");
+      // elog(WARNING, "closed the new relation");
       return false;
     }
 
     /* Check for a match */
     if (DatumGetBool(res)) {
-      elog(WARNING, "Found a match");
+      // elog(WARNING, "Found a match");
       pglogical_relation_close(default_rel, NoLock);
-      elog(WARNING, "closed the old relation");
+      // elog(WARNING, "closed the old relation");
       /* HACK: This is really nasty. Make a better func signature. */
       *default_rel_ptr = destination_rel;
-      elog(WARNING, "set pointer from old relation to the new relation: %s", (*default_rel_ptr)->relname);
+      // elog(WARNING, "set pointer from old relation to the new relation: %s", (*default_rel_ptr)->relname);
       return true;
     }
 
-    elog(WARNING, "Filter did not match. Clearing dest relation.");
+    // elog(WARNING, "Filter did not match. Clearing dest relation.");
 
     /* Ensure the dest relation is closed if it doesn't match. */
     if (destination_rel != NULL)
       pglogical_relation_close(destination_rel, NoLock);
 
-    elog(WARNING, "Loop completed. On to next filter...");
+    // elog(WARNING, "Loop completed. On to next filter...");
   }
 
   /* Otherwise it doesn't go through */
@@ -652,7 +652,7 @@ handle_insert(StringInfo s)
 	rel = pglogical_read_insert(s, RowExclusiveLock, &newtup);
 	errcallback_arg.rel = rel;
 
-    elog(WARNING, "Insert has a relation and about to check for changes.");
+    // elog(WARNING, "Insert has a relation and about to check for changes.");
 
 	/* If in list of relations which are being synchronized, skip. */
 	if (!should_apply_changes_for_rel(rel->nspname, rel->relname))
@@ -661,17 +661,17 @@ handle_insert(StringInfo s)
 		return;
 	}
 
-    elog(WARNING, "Insert has a relation and about to check for filter.");
+    // elog(WARNING, "Insert has a relation and about to check for filter.");
 
 	if (!pglogical_should_filter_record(&newtup, &rel, MySubscription->subscription_filter_items))
 	{
-      elog(WARNING, "Filter said we should reject message for relation: %s.%s", rel->nspname, rel->relname);
+      // elog(WARNING, "Filter said we should reject message for relation: %s.%s", rel->nspname, rel->relname);
 		pglogical_relation_close(rel, NoLock);
-        elog(WARNING, "We freed the relation: %s.%s", rel->nspname, rel->relname);
+        // elog(WARNING, "We freed the relation: %s.%s", rel->nspname, rel->relname);
 		return;
 	}
 
-    elog(WARNING, "We have a relation: %s.%s", rel->nspname, rel->relname);
+    // elog(WARNING, "We have a relation: %s.%s", rel->nspname, rel->relname);
 
 	/* Handle multi_insert capabilities. */
 	if (use_multi_insert)
@@ -684,7 +684,7 @@ handle_insert(StringInfo s)
 		else
 		{
 			apply_api.multi_insert_add_tuple(rel, &newtup);
-            elog(WARNING, "Multi insert: %s.%s", rel->nspname, rel->relname);
+            // elog(WARNING, "Multi insert: %s.%s", rel->nspname, rel->relname);
 			last_insert_rel_cnt++;
 			return;
 		}
@@ -706,12 +706,12 @@ handle_insert(StringInfo s)
 		}
 	}
 
-    elog(WARNING, "Normal insert: %s.%s", rel->nspname, rel->relname);
+    // elog(WARNING, "Normal insert: %s.%s", rel->nspname, rel->relname);
 
 	/* Normal insert. */
 	apply_api.do_insert(rel, &newtup);
 
-    elog(WARNING, "FINISHED! Normal insert: %s.%s", rel->nspname, rel->relname);
+    // elog(WARNING, "FINISHED! Normal insert: %s.%s", rel->nspname, rel->relname);
 
 	/* if INSERT was into our queue, process the message. */
 	if (RelationGetRelid(rel->rel) == QueueRelid)
@@ -751,7 +751,7 @@ handle_insert(StringInfo s)
 	else
 		pglogical_relation_close(rel, NoLock);
 
-    elog(WARNING, "We made it to the very end of insert");
+    // elog(WARNING, "We made it to the very end of insert");
 }
 
 static void
